@@ -1,0 +1,295 @@
+---
+title: "Project 3 - Part 2"
+output: html_document
+date: "2023-11-30"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Recognizing Climate Change Awareness Disparities in Vulnerable Nations
+
+## Importing Packages
+
+```{r setup, include=FALSE, message=FALSE}
+#IMPORT ALL PACKAGES
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(tibble)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(readr)
+library(repurrrsive)
+library(scales)
+library(arrow)
+library(ggthemes)
+library(ggridges)
+```
+
+## Loading and Cleaning datasets
+
+```{r}
+#REGION DATA CLEANING
+  regionclassification <- read_csv("WorldRegions.csv")
+  regionclassification |> head()
+  regionclassification <- regionclassification |>
+    separate(col="Country\tRegion\tGlobal South", into=c("Country", "Region", "Global North or Global South?"), sep=" \t")
+  regionclassification
+```
+
+```{r}
+#CYCLONE DATA CLEANING
+  cyclone_data_address <- "https://www.nhc.noaa.gov/data/hurdat/"
+  AT_cyclone <- "hurdat2-1851-2022-050423.txt"
+  NP_cyclone <- "hurdat2-nepac-1949-2022-050423.txt"
+  cyclone_files <- c(AT_cyclone, NP_cyclone)
+  
+  cyclone_parquet_file <- "Cyclone-1850-2023.parquet"
+  cyclones <- cyclone_parquet_file |>
+    read_parquet()
+  cyclones
+```
+
+```{r}
+#SEA ICE DATA CLEANING
+  sea_ice_regional <- "https://masie_web.apps.nsidc.org/pub//DATASETS/NOAA/G02135/seaice_analysis/"
+  N_sea <- "N_Sea_Ice_Index_Regional_Daily_Data_G02135_v3.0.xlsx"
+  S_sea <- "S_Sea_Ice_Index_Regional_Daily_Data_G02135_v3.0.xlsx"
+  ice_extent <- "Sea_Ice_Index_Daily_Extent_G02135_v3.0.xlsx"
+  sea_ice_files <- c(N_sea, S_sea, ice_extent)
+  sea_ice_files2 <- str_c(sea_ice_regional, sea_ice_files)
+  
+  ice_extent_sheet <- function(xlsx_file = sea_ice_regional_xlsx, single_sheet) {
+    xlsx_file |>
+    read.xlsx(
+      sheet = single_sheet,
+      skipEmptyCols = TRUE,
+      fillMergedCells = TRUE,) |>
+     pivot_longer(
+       cols = !c(month, day),
+       names_to = "year",
+       names_transform = list(year = as.integer),
+       values_to = "ice_extent", 
+       values_drop_na = TRUE,) |>
+     mutate(
+       month = ordered(
+         month,
+         levels = c("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")),
+       sheet_name = single_sheet) |>
+     separate_wider_regex(
+      cols = sheet_name,
+      patterns = c(
+        region = "[\\w-]+",   # <- this is anticipating the entries with names containing `-`
+        "-",
+        measure = "Area|Extent",
+        "-km\\^2")) |>
+     mutate(region = str_replace(region, '-', ' '))
+  }
+  
+  ice_extent_sheet_workbook <- function(sea_ice_regional_xlsx) {
+    sea_ice_workbook <- sea_ice_regional_xlsx |>
+      loadWorkbook()
+    (sheet_names <- sea_ice_workbook |>
+      names() # this corresponds to `excel_sheets()` in `readxl` package
+      )
+    
+    (data_sheets <- sheet_names[str_detect(sheet_names, 'km\\^2$')])
+    (all_sheets <- purrr::map(data_sheets,\(single_sheet) ice_extent_sheet(sea_ice_regional_xlsx,single_sheet)
+      ) )
+    (sea_ice_region_extent <- all_sheets |> purrr::list_rbind())
+    sea_ice_region_extent
+  }
+  sea_ice_region_raw <- sea_ice_files2 |>
+    map(ice_extent_sheet_workbook)
+```
+
+```{r}
+#CLIMATE OPINION DATA CLEANING
+climate_opinion_address <- "https://data.humdata.org/dataset/dc9f2ca4-8b62-4747-89b1-db426ce617a0/resource/6041db5f-8190-47ff-a10b-9841325de841/download/climate_change_opinion_survey_2022_aggregated.xlsx"
+
+aware_sheet_name <- "climate_awareness"
+climate_awareness_raw <- climate_opinion_address |>
+   read.xlsx(aware_sheet_name)
+
+climate_awareness_update1 <- climate_awareness_raw |>
+   pivot_longer(cols='Albania':'Zambia', names_to='country', values_to = 'score')
+
+climate_awareness_update2 <- climate_awareness_update1 |>
+ mutate(
+   climate_awareness = case_when(
+     climate_awareness == "I have never heard of it" ~ "aware_no",
+     climate_awareness == "I know a little about it" ~ "aware_alittle",
+     climate_awareness == "I know a moderate amount about it" ~ "aware_moderate",
+     climate_awareness == "I know a lot about it" ~ "aware_alot",
+     climate_awareness == "Refused" ~ "aware_refuse",
+     climate_awareness == "(Unweighted Base)" ~ "aware_base",
+     TRUE ~ as.character(climate_awareness)
+   )
+ ) |>
+   rename(answer = climate_awareness)
+
+climate_awareness <- climate_awareness_update2 |>
+   pivot_wider(names_from = answer, values_from = score)
+
+happening_sheet_name <- "climate_happening"
+climate_happening_raw <- climate_opinion_address |>
+  read.xlsx(happening_sheet_name)
+
+climate_happening_update1 <- climate_happening_raw |>
+  pivot_longer(cols='Albania':'Zambia', names_to='country', values_to = 'score')
+
+climate_happening_update2 <- climate_happening_update1 |>
+ mutate(climate_happening = case_when(
+     climate_happening == "Yes" ~ "happening_yes",
+     climate_happening == "No" ~ "happening_no",
+     climate_happening == "Don't know" ~ "happening_dontknow",
+     climate_happening == "Refused" ~ "happening_refuse",
+     climate_happening == "(Unweighted Base)" ~ "happening_base",
+     TRUE ~ as.character(climate_happening)
+   )
+ ) |>
+   rename(answer = climate_happening)
+
+climate_happening <- climate_happening_update2 |>
+  pivot_wider(names_from = answer, values_from = score)
+
+climate_opinion_sheets <- climate_awareness |>
+  full_join(
+    climate_happening,
+    by = join_by(country)
+  )
+
+# Removed .'s from all values in the data
+climate_opinion_sheets <- climate_opinion_sheets |>
+  mutate(country = gsub("\\.", " ", country))
+
+```
+
+## REPORT
+
+### Introduction
+
+In an increasingly interconnected world, the issue of climate change looms disproportionately over the vulnerable economies of developing nations. The consequences of climate change further amplifies the challenges of already unstable countries, rendering them more susceptible to the ravages of natural disasters. Furthering this issue is the prevalent lack of awareness and understanding in these regions concerning the severity of climate change. The resulting lack of proactive measures to mitigate its effects not only perpetuates the process of environmental decline but also intensifies the economic instability and health crises plaguing these communities. As we examine the relation between climate change, economic instability, and knowledge gaps, a harsh truth becomes evident - the most economically vulnerable nations are enduring the harshest consequences of a crisis that they do not understand. This report looks into how climate change is making life tougher for such countries, rendering them more susceptible to the ravages of natural disasters. 
+
+### Recognizing Disparities
+
+As mentioned previously, there is a concerning disparity in climate change awareness across regions. This can be further proved in our analysis in Figure 1.
+
+```{r}
+climate_opinion_regions <- climate_opinion_sheets |>
+  mutate(
+    Region = regionclassification$Region[match(country, regionclassification$Country)]
+  ) |>
+  group_by(Region) |>
+  summarise(across(starts_with("aware_"), ~mean(., na.rm=TRUE))) |>
+  ungroup() |>
+  distinct() |>
+  select(-c(aware_base)) |>
+  na.omit() |>
+  pivot_longer(cols=c("aware_no", "aware_alittle", "aware_moderate",  "aware_alot",  "aware_refuse"),names_to="Aware",values_to ="Number", values_drop_na = TRUE) 
+
+climate_opinion_regions |> ggplot(aes(x = Region, y= Number, fill = Aware)) +
+  geom_bar(position = "stack", stat = "identity") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  theme(legend.position = "left") +
+  theme(legend.text = element_text(size = 8),  
+          legend.title = element_text(size = 10)) + 
+  labs(
+    x = "Region",
+    y = "Percantage of Awareness",
+    title = "International knowledge on Climate Change", 
+    subtitle = "Figure 1") + 
+  theme(plot.subtitle = element_text(size = 8))
+
+```
+
+This graph depicts the awareness of the effects of climate change in various regions. It illustrates differences in the public's recognition of the consequences of climate change by showing differences in awareness levels according to economic development. North America and Europe exhibit a higher level of awareness with an average of just 25% of popluation who fall under less aware. On the other hand regions such as Africa, Asia, Middle east and South America exhibit significantly lower levels of awareness with an average of 40% of popluation who fall under less aware. These findings shed light on a global discrepancy in environmental consciousness, emphasizing the need for targeted efforts to enhance awareness and understanding of climate change issues in less-aware regions.
+
+### Reacting to Climate Change
+
+Previously, our analysis observations show that different parts of the world have very different perspectives on climate change. However different levels of awareness can also be seen in our analysis of sea ice extent between the Northern and Southern Hemispheres. As displayed in figure 2, the Northern Hemisphere exhibits comparatively steady trends consequently the differences in sea ice extent trends and awareness of climate change are consistent. There is typically greater public awareness of climate change in areas where alterations in climatic patterns are more pronounced. Therefore they've been more reactive with their efforts in stopping climate change.
+
+```{r}
+max_value <- 2400000
+
+ggplot() +
+  geom_line(
+    sea_ice_region_raw[[1]] |>
+      summarise(
+        .by = year,
+        year = year,
+        avg_ice_extent = mean(ice_extent)
+      ) |>
+      distinct(),
+    mapping = aes(x = year, y = avg_ice_extent), color = "blue", size = 0.75) +
+  coord_cartesian(ylim = c(NA, max_value)) +
+  scale_y_continuous(labels = function(x) paste0(x / 1000, "")) +
+  labs(x = "Year",
+     y = expression("Ice extent in km"^2*"(in thousands)"),
+     title = "Glacial Oscillations: An Annual Lineage of Ice Extent in the North",
+     subtitle = "Figure 2") + 
+  theme(plot.subtitle = element_text(size = 8)) +
+  theme(plot.title = element_text(size = 14),
+  )
+```
+
+On the other hand, in figure 2 it can be seen that the Southern Hemisphere exhibits a rapid decrease in sea ice extent suggestive of climate change, and this might make people in these areas less aware of climate change and make it harder to prioritize initiatives to combat it.
+
+```{r}
+ggplot() +
+  geom_line(
+    sea_ice_region_raw[[2]] |>
+      summarise(
+        .by = year,
+        year = year,
+        avg_ice_extent = mean(ice_extent)
+      ) |>
+      distinct(),
+    mapping = aes(x = year, y = avg_ice_extent), color = "green", size = 0.75) +
+  coord_cartesian(ylim = c(NA, max_value)) +
+  scale_y_continuous(labels = function(x) paste0(x / 1000, "")) +
+  labs(x = "Year",
+       y = expression("Ice extent in km"^2*"(in thousands)"),
+       title = "Glacial Oscillations: An Annual Lineage of Ice Extent in the South",  
+       subtitle = "Figure 3") + 
+  theme(plot.subtitle = element_text(size = 8)) +
+  theme(plot.title = element_text(size = 14),)
+```
+
+These differences highlight the necessity of specialized awareness-raising efforts and focused interventions to address these disparities in climate change.
+
+### Urgency for Inclusive Climate Solutions
+
+In addition to the local impacts on vulnerable nations,the growing consequences of climate change have consequences on a global scale. This is most apparent in the frequency and strength of storms.
+
+```{r}
+cyclones |>
+  summarise(
+    .by = ObservYear,
+    ObservYear = ObservYear,
+    count = n()
+  ) |>
+  distinct() |>
+  ggplot() +
+  geom_line(aes(x = ObservYear, y = count), color = "red", size = 0.6) +
+  labs(x = "Year",
+       y = "Number of Storms",
+       title = "Annual Storm Frequency",
+        subtitle = "Figure 4") + 
+  theme(plot.subtitle = element_text(size = 8)) +
+  theme(plot.title = element_text(size = 14),
+  )
+```
+
+Storm frequency and intensity are rising as a result of increased climate instability in these sensitive areas. Due to the energy released by warming ocean surfaces and an increase in sea levels, storms like hurricanes, typhoons, and cyclones become stronger and more frequent. This heightened storm activity poses a direct threat not only to the affected regions but also on a global scaleas they have the potential to impact critical supply chains, economic stability, and humanitarian efforts.
+
+### Strategies to close the gap
+
+The consequences of climate change are universal, the uneven distribution of awareness jeopardizes the collaborative global efforts needed to combat this pressing issue. Bridging this awareness gap is essential for fostering equitable, informed action to address the challenges of climate change on a worldwide scale. The World Health Organization has suggested several measures to help developing nations, such as creating health systems that are resilient to climate change, incorporating risk assessments related to climate change, and putting in place climate-informed surveillance for major health hazards. It's also critical to close the funding gap for health adaptation, encourage emission-reduction initiatives, and make sure health is a top priority for climate policy. In order to address the health implications of climate change for these countries, cooperation with major health agencies and improved access to information and data are essential.
+
+### Conclusion
+
+The report highlights how vulnerable economies - especially those in developing nations - are disproportionately impacted by climate change, which compounds their already-existing problems. Ineffective responses are hindered by a lack of knowledge in these areas, which complicates health crises, economic instability, and destruction of the environment. Furthermore, storms become more intense as climate instability increases, posing direct threats outside of affected areas and necessitating immediate, coordinated global action to address the mounting challenges of climate change.
