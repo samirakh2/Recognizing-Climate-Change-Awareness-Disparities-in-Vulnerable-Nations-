@@ -1,7 +1,5 @@
 ---
-title: "Project 3 - Part 2"
-output: html_document
-date: "2023-11-30"
+title: " Recognizing Climate Change Awareness Disparities in Vulnerable Nations"
 ---
 
 ```{r setup, include=FALSE}
